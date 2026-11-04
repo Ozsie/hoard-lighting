@@ -11,8 +11,7 @@ This is a HOARD engine package
   viewport culling. It is a dependency-free leaf: engine-agnostic,
   game-agnostic, canvas-free (pure math — the consumer renders the
   returned data).
-- The game consumes it as a `@hoard-engine/lighting` dependency (a
-  `file:` path until the package is published to npm) and keeps the
+- The game consumes it as a `@hoard-engine/lighting` dependency and keeps the
   canvas compositing — gradients, sprites, the darkness veil — on its
   side (`src/dungeon/LightRendering.ts`), per the compute/render split.
 
