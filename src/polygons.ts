@@ -175,6 +175,47 @@ const rayExitThroughCell = (
   return { x: center.x + dirX * t, y: center.y + dirY * t };
 };
 
+// --- Chord refinement ------------------------------------------------------
+
+// A fixed circle of rays is a tessellation. Two adjacent rays can stop on
+// different geometry — one on a wall's west face, its neighbor around the
+// wall's south-west corner — and the straight chord between those
+// endpoints then cuts across the wall corner's interior. The triangle
+// that chord spans is lit ink bleeding onto the far side of walls.
+// Refinement walks the polygon's chords and repairs exactly the chords
+// whose segments sample a blocker's interior: face, edge and corner stops
+// all land on cell boundary lines, so when such a chord's endpoints sit
+// on two perpendicular boundary lines, inserting the lines' corner
+// replaces it with the wall-hugging L-path — the true visibility
+// boundary. Chords without a perpendicular-line pair fall back to an
+// angular bisection probe: a fresh ray marches at the sector's mid-angle
+// and its endpoint is inserted, converging on the transition angle. Every
+// probe marches with the very same walk and blocking rules as a base
+// ray, so blocking and propagation semantics never change — only the
+// tessellation tightens. Sweep beams keep the bare fixed-ray polygon:
+// their assembly is index-parallel to the rays, and an open-water cone
+// has no corners to overshoot.
+
+// How close a point's cell coordinates must be to a whole cell line to
+// count as sitting on that boundary line; float noise never gets close.
+const CHORD_LINE_EPS = 0.01;
+
+// A chord only counts as cutting a blocker when its sampled points reach
+// this deep into the cell interior; chords riding face lines stay clean.
+const CHORD_LEAK_INSET_PX = 0.5;
+
+// Perpendicular corner insertion repairs a chord completely; the
+// bisection fallback needs its recursion depth bounded.
+const CHORD_REFINE_DEPTH = 4;
+
+// Angular slack when checking that an inserted vertex keeps the polygon's
+// angular vertex order (radians).
+const CHORD_ANGLE_EPS = 0.05;
+
+// Absolute budget for refinement inserts, so pathological environments
+// cannot grow a polygon without bound.
+const MAX_REFINED_POINT_COUNT = 240;
+
 // Casts `LIGHT_RAY_COUNT` rays from the light source and returns the polygon
 // (in world pixel coordinates) of the lit area. Each ray walks the grid cell
 // by cell, from one boundary crossing to the next, and stops at the first
@@ -182,15 +223,31 @@ const rayExitThroughCell = (
 // edge), a fog cell (stopped at its near edge) or an opaque cell — which is
 // lit partway in, so the shadow starts behind it — or the light's radius.
 // Rays pass freely between diagonally adjacent opaque cells, through their
-// shared corner. For sweep lights only the rays within the rotating beam cone
-// contribute; the rest collapse onto the light source — assembled from the
-// cached ray endpoints without marching anything.
+// shared corner. The chord refinement pass then tightens the polygon wherever
+// a straight chord between adjacent rays would cut across shadow, so no lit
+// wedge bleeds behind a wall (see above). For sweep lights only the rays
+// within the rotating beam cone contribute; the rest collapse onto the light
+// source — assembled from the cached ray endpoints without marching anything.
 export const computeLightPolygon = (
   light: LightSource,
   env: LightingEnv,
   cellSize: number,
   occlusionKey: string,
   timeMs = 0,
+): Position[] =>
+  computeLightPolygonPoints(light, env, cellSize, occlusionKey, timeMs, true);
+
+// The polygon computation itself. `refine` decides whether the bare
+// fixed-ray polygon gets the chord refinement pass: sweep lights need
+// the bare endpoints in fixed index order (their beam assembly maps
+// index -> angle), everyone else wants the leak-tight polygon.
+const computeLightPolygonPoints = (
+  light: LightSource,
+  env: LightingEnv,
+  cellSize: number,
+  occlusionKey: string,
+  timeMs: number,
+  refine: boolean,
 ): Position[] => {
   const center = lightCenter(light, cellSize, timeMs);
   // Gas lights ignore their radius: the cloud expands until it leaves the
@@ -203,7 +260,6 @@ export const computeLightPolygon = (
     ? Number.POSITIVE_INFINITY
     : (light.radius ?? DEFAULT_LIGHT_RADIUS) * cellSize;
   const map = occlusionMapFor(env, occlusionKey);
-  const points: Position[] = [];
   // The midpoint of the shared edge between two adjacent cells, in world
   // pixels — where a ray stops when a door, wall or fog blocks the step.
   const sharedEdgeMidpoint = (from: Position, to: Position): Position => ({
@@ -283,10 +339,10 @@ export const computeLightPolygon = (
     });
   }
 
-  for (let i = 0; i < LIGHT_RAY_COUNT; i++) {
-    const angle = (2 * Math.PI * i) / LIGHT_RAY_COUNT;
-    const dirX = Math.cos(angle);
-    const dirY = Math.sin(angle);
+  // The single-ray walk every ray runs — the base circle and every
+  // refinement probe alike. Marches from the light center along the unit
+  // direction and returns the ray's endpoint.
+  const marchRay = (dirX: number, dirY: number): Position => {
     let end: Position = {
       x: center.x + dirX * radiusPx,
       y: center.y + dirY * radiusPx,
@@ -331,9 +387,7 @@ export const computeLightPolygon = (
           dirY,
         );
         if (stop) {
-          end = stop;
-          points.push(end);
-          continue;
+          return stop;
         }
         prevCell = { x: cellX, y: cellY };
       }
@@ -371,9 +425,136 @@ export const computeLightPolygon = (
         prevCell = cell;
       }
     }
-    points.push(end);
+    return end;
+  };
+
+  // --- Chord refinement (see the section comment above) -------------------
+
+  // One polygon vertex: a point paired with the angle of the ray it came
+  // from, so repair inserts stay in angular order.
+  type RayEnd = { angle: number; point: Position };
+
+  // Whether the straight segment between two polygon points samples a
+  // blocker's interior (deeper than the face-riding tolerance).
+  const chordCutsBlocker = (lo: Position, hi: Position): boolean => {
+    const steps = Math.max(
+      2,
+      Math.ceil(Math.hypot(hi.x - lo.x, hi.y - lo.y) / 2),
+    );
+    for (let s = 1; s < steps; s++) {
+      const t = s / steps;
+      const x = lo.x + (hi.x - lo.x) * t;
+      const y = lo.y + (hi.y - lo.y) * t;
+      const cell = {
+        x: Math.floor(x / cellSize),
+        y: Math.floor(y / cellSize),
+      };
+      if (lightBlockFromMap(map, cell, light) !== 'opaque') {
+        continue;
+      }
+      const fx = x - cell.x * cellSize;
+      const fy = y - cell.y * cellSize;
+      if (
+        Math.min(fx, cellSize - fx, fy, cellSize - fy) > CHORD_LEAK_INSET_PX
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // The cell boundary line a polygon point sits on, or null when it lies
+  // in a cell's interior (a radius stop, an actor's half-way stop).
+  const boundaryLineOf = (
+    point: Position,
+  ): { axis: 'x' | 'y'; at: number } | null => {
+    const onX = Math.abs(point.x / cellSize - Math.round(point.x / cellSize));
+    const onY = Math.abs(point.y / cellSize - Math.round(point.y / cellSize));
+    if (onX <= CHORD_LINE_EPS && onY > CHORD_LINE_EPS) {
+      return { axis: 'x', at: point.x };
+    }
+    if (onY <= CHORD_LINE_EPS && onX > CHORD_LINE_EPS) {
+      return { axis: 'y', at: point.y };
+    }
+    return null;
+  };
+
+  // Clockwise angular distance between two ray angles.
+  const ccwDiff = (from: number, to: number): number => {
+    const twoPi = 2 * Math.PI;
+    return (((to - from) % twoPi) + twoPi) % twoPi;
+  };
+
+  // Repairs the chord lo -> hi by inserting vertices before hi's position
+  // in `out`: the perpendicular-line corner exact fix first, the angular
+  // bisection probe as the fallback.
+  const refineChordInto = (
+    lo: RayEnd,
+    hi: RayEnd,
+    depth: number,
+    out: RayEnd[],
+  ): void => {
+    if (depth <= 0 || out.length >= MAX_REFINED_POINT_COUNT) {
+      return;
+    }
+    if (!chordCutsBlocker(lo.point, hi.point)) {
+      return;
+    }
+    const loLine = boundaryLineOf(lo.point);
+    const hiLine = boundaryLineOf(hi.point);
+    if (loLine && hiLine && loLine.axis !== hiLine.axis) {
+      const corner =
+        loLine.axis === 'x'
+          ? { x: loLine.at, y: hiLine.at }
+          : { x: hiLine.at, y: loLine.at };
+      const angle = Math.atan2(corner.y - center.y, corner.x - center.x);
+      const width = ccwDiff(lo.angle, hi.angle);
+      if (ccwDiff(lo.angle, angle) <= width + CHORD_ANGLE_EPS) {
+        const mid: RayEnd = { angle, point: corner };
+        refineChordInto(lo, mid, depth - 1, out);
+        out.push(mid);
+        refineChordInto(mid, hi, depth - 1, out);
+        return;
+      }
+    }
+    // Fallback: bisect the sector's angle, march a fresh ray there and
+    // insert its endpoint; the halves recurse on the same rule.
+    const midAngle = lo.angle + ccwDiff(lo.angle, hi.angle) / 2;
+    const point = marchRay(Math.cos(midAngle), Math.sin(midAngle));
+    if (
+      Math.hypot(point.x - lo.point.x, point.y - lo.point.y) < 0.05 &&
+      Math.hypot(point.x - hi.point.x, point.y - hi.point.y) < 0.05
+    ) {
+      return;
+    }
+    const mid: RayEnd = { angle: midAngle, point };
+    refineChordInto(lo, mid, depth - 1, out);
+    out.push(mid);
+    refineChordInto(mid, hi, depth - 1, out);
+  };
+
+  // The base circle of rays; the repair pass runs over the consecutive
+  // pairs unless the caller needs the bare fixed-order endpoints (sweep
+  // beams).
+  const base: RayEnd[] = [];
+  for (let i = 0; i < LIGHT_RAY_COUNT; i++) {
+    const angle = (2 * Math.PI * i) / LIGHT_RAY_COUNT;
+    base.push({ angle, point: marchRay(Math.cos(angle), Math.sin(angle)) });
   }
-  return points;
+  if (!refine) {
+    return base.map((ray) => ray.point);
+  }
+  const out: RayEnd[] = [];
+  for (let i = 0; i < base.length; i++) {
+    out.push(base[i]);
+    refineChordInto(
+      base[i],
+      base[(i + 1) % base.length],
+      CHORD_REFINE_DEPTH,
+      out,
+    );
+  }
+  return out.map((ray) => ray.point);
 };
 
 // Cache for light visibility polygons. A polygon depends only on the
@@ -496,14 +677,17 @@ const sweepRayEndpointsFor = (
   let points = sweepEndpointCache.endpoints.get(geometry);
   if (!points) {
     // March every ray to its endpoint, ignoring the sweep: the stripped
-    // light runs the plain polygon computation for all rays at once. The
-    // march is time-independent without the sweep, so timeMs is 0.
-    points = computeLightPolygon(
+    // light runs the plain polygon computation for all rays at once —
+    // bare, in fixed ray order, so the beam assembly above can map
+    // index -> angle. The march is time-independent without the sweep,
+    // so timeMs is 0.
+    points = computeLightPolygonPoints(
       { ...light, effect: undefined },
       env,
       cellSize,
       occlusionKey,
       0,
+      false,
     );
     sweepEndpointCache.endpoints.set(geometry, points);
   }

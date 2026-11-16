@@ -1,6 +1,6 @@
 {
 	"name": "@hoard-engine/lighting",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "HOARD engine: light sources on a tile grid — visibility polygons via ray casting, animation effects, sparkles and viewport culling over an injected occlusion environment",
 	"keywords": [
 		"lighting",

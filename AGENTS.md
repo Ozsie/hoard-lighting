@@ -14,6 +14,12 @@ This is a HOARD engine package
 - The game consumes it as a `@hoard-engine/lighting` dependency and keeps the
   canvas compositing — gradients, sprites, the darkness veil — on its
   side (`src/dungeon/LightRendering.ts`), per the compute/render split.
+- Like every HOARD engine package, it is designed to be pluggable and
+  interoperable, and as standalone as possible: individually adoptable,
+  swappable and usable without any other HOARD package, game or
+  framework. Packages compose through data — minimal shapes, callbacks,
+  plain values — never through shared state; a new dependency or a
+  sibling import here is a design regression, not an optimization.
 
 ## Hard boundaries
 
