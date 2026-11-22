@@ -12,6 +12,13 @@ export {
   lightSweepAngle,
 } from './effects';
 export {
+  DEFAULT_FALLOFF_PROFILE,
+  LightFalloffProfile,
+  falloffScalar,
+  lightFalloffAt,
+  sampleFalloffProfile,
+} from './falloff';
+export {
   DEFAULT_LIGHT_COLOR,
   DEFAULT_LIGHT_INTENSITY,
   DEFAULT_LIGHT_RADIUS,

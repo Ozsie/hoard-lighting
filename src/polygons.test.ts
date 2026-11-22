@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_LIGHT_POLYGON_CACHE_ENTRIES,
   computeLightPolygon,
   lightInViewport,
   lightPolygonFor,
@@ -295,6 +296,95 @@ describe('lightPolygonFor', () => {
       x: 1.5 * CELL,
       y: 3 * CELL,
     });
+  });
+});
+
+describe('occlusion cache invalidation contract', () => {
+  // The occlusion key is the caller's token for everything the environment
+  // callbacks can read out of state. These tests pin down what happens when
+  // that contract is kept and when it is broken.
+
+  // A 12x5 open room with a wall cell at (3, 1) that can be removed, as a
+  // door or a discovered wall would change it.
+  const mutableEnv = (isWall: () => boolean): LightingEnv => ({
+    gridWidth: 12,
+    gridHeight: 5,
+    cellOcclusion: (x, y) =>
+      isWall() && x === 3 && y === 1
+        ? LightOcclusion.OPAQUE
+        : LightOcclusion.OPEN,
+    isStepBlocked: () => false,
+    roomOf: () => 'A',
+  });
+
+  it('reuses stale occlusion when the callbacks change but the token does not', () => {
+    let wall = true;
+    const env = mutableEnv(() => wall);
+    const l = light({ radius: 8, position: { x: 1, y: 1 } });
+    const walled = lightPolygonFor(l, env, CELL, 'rev1', 0);
+    // The wall cell is lit partway in: the ray stops halfway through it.
+    expectRay(rayEndpoint(walled, 0), { x: 3.5 * CELL, y: 1.5 * CELL });
+
+    // The wall is gone from the environment, but the token is unchanged:
+    // the cached occlusion map and polygon are reused — stale by contract.
+    wall = false;
+    const stale = lightPolygonFor(l, env, CELL, 'rev1', 0);
+    expect(stale).toBe(walled);
+    expectRay(rayEndpoint(stale, 0), { x: 3.5 * CELL, y: 1.5 * CELL });
+
+    // A changed token invalidates: the polygon is recomputed and the ray
+    // now reaches the full radius.
+    const fresh = lightPolygonFor(l, env, CELL, 'rev2', 0);
+    expect(fresh).not.toBe(walled);
+    expectRay(rayEndpoint(fresh, 0), { x: 9.5 * CELL, y: 1.5 * CELL });
+  });
+
+  it('treats cellSize as part of the occlusion key contract', () => {
+    const env = envFromGrid(Array.from({ length: 12 }, () => '............'));
+    const l = light({ radius: 2, id: 'sized', position: { x: 1, y: 1 } });
+    const at32 = lightPolygonFor(l, env, 32, 'key', 0);
+    expectRay(rayEndpoint(at32, 0), { x: 3.5 * 32, y: 1.5 * 32 });
+    // Same key, different cell size: reused (stale) — the key must carry
+    // cellSize, as the README example does.
+    expect(lightPolygonFor(l, env, 64, 'key', 0)).toBe(at32);
+    // A key that includes the cell size recomputes at the new scale.
+    const at64 = lightPolygonFor(l, env, 64, 'key-64', 0);
+    expect(at64).not.toBe(at32);
+    expectRay(rayEndpoint(at64, 0, { x: 1.5 * 64, y: 1.5 * 64 }), {
+      x: 3.5 * 64,
+      y: 1.5 * 64,
+    });
+  });
+
+  it('bounds the polygon cache and evicts the oldest entry first', () => {
+    const env = envFromGrid(Array.from({ length: 12 }, () => '............'));
+    const key = 'bounded';
+    const first = light({ id: 'first', radius: 2, position: { x: 1, y: 1 } });
+    const firstPoints = lightPolygonFor(first, env, CELL, key, 0);
+    const last = light({
+      id: 'last',
+      radius: 2,
+      position: { x: 9, y: 8 },
+    });
+    for (let i = 0; i < MAX_LIGHT_POLYGON_CACHE_ENTRIES - 1; i++) {
+      lightPolygonFor(
+        light({
+          id: `filler-${i}`,
+          radius: 2,
+          position: { x: 2 + (i % 8), y: 1 + Math.floor(i / 8) },
+        }),
+        env,
+        CELL,
+        key,
+        0,
+      );
+    }
+    const lastPoints = lightPolygonFor(last, env, CELL, key, 0);
+    // The cache held MAX entries when 'last' was inserted, so 'first' —
+    // the oldest — was evicted and is recomputed on its next request,
+    // while the most recent entry is still served from cache.
+    expect(lightPolygonFor(last, env, CELL, key, 0)).toBe(lastPoints);
+    expect(lightPolygonFor(first, env, CELL, key, 0)).not.toBe(firstPoints);
   });
 });
 

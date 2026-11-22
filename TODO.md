@@ -10,9 +10,9 @@ Milestones use the same labels as the game roadmap and hand off in order: **pack
 
 The package currently supplies visibility geometry and effect scalars; consumers choose their own rendered attenuation. `src/types.ts` and `src/effects.ts` are the relevant contract/math areas; the scene renderers remain outside this package.
 
-- [ ] Add pure falloff evaluation and sampled scalar profiles that consumers can apply consistently in either projection.
-- [ ] Provide a compatibility profile that lets consumers retain their existing rendered falloff and preserves current intensity/visibility outputs; do not make a new profile implicit.
-- [ ] Export new public helpers through `src/index.ts` and cover edge cases (zero/invalid radius, center, range boundary and out-of-range distance) with dependency-free math tests.
+- [x] Add pure falloff evaluation and sampled scalar profiles that consumers can apply consistently in either projection.
+- [x] Provide a compatibility profile that lets consumers retain their existing rendered falloff and preserves current intensity/visibility outputs; do not make a new profile implicit.
+- [x] Export new public helpers through `src/index.ts` and cover edge cases (zero/invalid radius, center, range boundary and out-of-range distance) with dependency-free math tests.
 
 **Handoff and acceptance:** Scene consumers own gradient construction, CSS-color parsing/alpha and compositing. Verify equivalent sampled values at the same normalized distances and compatibility with the legacy consumer profile before changing renderer defaults. Do not soften or otherwise change the hard visibility polygon as a side effect of illumination falloff work.
 
@@ -76,14 +76,16 @@ package, but puts correctness responsibility on every caller.
 
 ### Plan (preserve the consumer-owned environment)
 
-1. Document the complete invalidation contract and provide a focused
-   example showing a stable environment with a changing revision token.
+1. [x] Document the complete invalidation contract and provide a focused
+       example showing a stable environment with a changing revision token
+       (README "Cache invalidation contract").
 2. Gather consumer evidence before choosing between an explicit
    `invalidateLightingCache(env)` seam, a caller-owned revision object,
    or the current string token with stronger diagnostics.
-3. Add tests that mutate callback-backed occlusion with and without a
-   changed token, so stale-cache behavior and the required invalidation
-   are unambiguous.
+3. [x] Add tests that mutate callback-backed occlusion with and without a
+       changed token, so stale-cache behavior and the required invalidation
+       are unambiguous (plus `cellSize`, alternating environments and bounded
+       retention, in `src/polygons.test.ts`).
 4. Measure cache retention and repeated environment usage; consider a
    bounded per-environment cache only if a real workload needs it.
 
