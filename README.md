@@ -3,7 +3,8 @@
 Light sources on a tile grid for the HOARD engine: visibility polygons
 via exact ray casting (DDA grid walking with corner pinch rules),
 animation effects (pulse, flicker, blink, sway, sweep, sparkle, aura,
-gas), quantized repaint signatures and viewport culling. A
+gas) with stepped or interpolated timing, quantized repaint signatures
+and viewport culling. A
 dependency-free leaf of the HOARD engine — pure computation, no game,
 grid package, framework or canvas knowledge; the consumer renders the
 returned light map data.
@@ -100,6 +101,30 @@ intensity and animation scale as before — and no falloff choice softens
 or changes the hard visibility polygon. Gradient construction, CSS-color
 parsing/alpha and compositing remain renderer concerns.
 
+## Animation timing
+
+Effects are evaluated at a time you supply, in one of two timings (the
+optional `options` argument of `lightIntensityScale` and
+`animatedLightSignature`):
+
+- **Stepped (default).** The historical behavior: flicker jumps between
+  its 8 jitter steps per loop. `animatedLightSignature` quantizes the
+  intensity into 1/16 steps, so a consumer repaints only when the
+  stepped output changes.
+- **Interpolated (`{ interpolate: true }`).** Flicker blends between
+  jitter steps with a smoothstep ease — deterministic for the same time
+  and input, continuous across step and loop boundaries, same [0.7, 1]
+  range. Every other effect is already continuous (or hard on/off by
+  design, like blink), so the option only changes flicker. The
+  signature's intensity quantum tightens to 1/256 — below one step of
+  8-bit rendered alpha — so the signature changes exactly when the
+  rendered output can change and never suppresses a repaint the
+  interpolation needs. Sweep, sway and sparkle steps are unchanged in
+  both timings.
+
+The stepped timing stays the default, so existing consumers keep their
+current output and repaint cadence until they opt in.
+
 ## Cache invalidation contract
 
 The occlusion-map, polygon and sweep-endpoint caches are scoped by the
@@ -155,9 +180,10 @@ within one frame recomputes on every switch.
 | `LightCellBlock`                                                                                      | How light interacts with a cell: 'opaque' (blocks but is lit), 'fog' (blocks at its near edge), 'none'                                                       |
 | `lightInViewport(light, viewport?)`                                                                   | Whether the light's glow can reach the viewport; gas lights always pass                                                                                      |
 | `LightViewport`                                                                                       | The visible rectangle of the world, in grid cells — without it, every light counts as visible                                                                |
-| `lightIntensityScale(light, timeMs)`                                                                  | The light's brightness multiplier (0..1) at a given time, from its animation effect                                                                          |
+| `lightIntensityScale(light, timeMs, options?)`                                                        | The light's brightness multiplier (0..1) at a given time, from its animation effect; `{ interpolate: true }` blends flicker continuously between its steps |
 | `isAnimatedLight(light)`                                                                              | Whether the light animates and so needs per-frame evaluation                                                                                                 |
-| `animatedLightSignature(light, timeMs)`                                                               | The quantized animation state as a comparable string — equal signatures produce identical output, so a consumer can skip the repaint                         |
+| `animatedLightSignature(light, timeMs, options?)`                                                     | The quantized animation state as a comparable string — equal signatures (and options) produce identical output, so a consumer can skip the repaint           |
+| `LightAnimationOptions`                                                                               | Animation timing options: `{ interpolate?: boolean }` — stepped (default) vs interpolated evaluation, see "Animation timing"                                  |
 | `lightRate(light)` / `DEFAULT_LIGHT_RATE`                                                             | The effect's loops per second (minimum 0.01, default 1)                                                                                                      |
 | `lightSwayOffset(light, cellSize, timeMs)`                                                            | The pendulum offset of a swaying light's center, in pixels (zero for others)                                                                                 |
 | `SWAY_STEP_CELLS`                                                                                     | The visible sway movement step: 1/32 of a cell, about a device pixel                                                                                         |

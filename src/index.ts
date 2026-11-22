@@ -11,6 +11,7 @@ export {
   lightSwayOffset,
   lightSweepAngle,
 } from './effects';
+export type { LightAnimationOptions } from './effects';
 export {
   DEFAULT_FALLOFF_PROFILE,
   LightFalloffProfile,

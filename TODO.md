@@ -20,10 +20,10 @@ The package currently supplies visibility geometry and effect scalars; consumers
 
 Animation math is in `src/effects.ts`; consumer repaint scheduling determines whether continuous values appear continuous. Sweep geometry and visibility are in `src/polygons.ts`.
 
-- [ ] Add deterministic interpolated flicker while retaining a compatible path for existing effect output and animation signatures.
-- [ ] Coordinate signature precision/semantics with consumers so signatures do not suppress repaints needed to show the intended interpolation; correct the documented `animatedLightSignature` signature in `README.md` when that API work is implemented.
+- [x] Add deterministic interpolated flicker while retaining a compatible path for existing effect output and animation signatures (`lightIntensityScale(light, timeMs, { interpolate: true })` blends the jitter steps with a smoothstep ease; the default stays the stepped compatibility path).
+- [x] Coordinate signature precision/semantics with consumers so signatures do not suppress repaints needed to show the intended interpolation; correct the documented `animatedLightSignature` signature in `README.md` when that API work is implemented (`animatedLightSignature(light, timeMs, options?)` tightens the intensity quantum to 1/256 — below one 8-bit alpha step — when interpolating; README "Animation timing" section documents both timings).
 - [ ] Keep sweep-edge continuity and beam behavior at corners as separately validated follow-ups; do not silently change occlusion or ray/corner rules as part of flicker work.
-- [ ] Add synthetic-time tests for determinism, interpolation continuity, range and compatibility.
+- [x] Add synthetic-time tests for determinism, interpolation continuity, range and compatibility (`src/effects.test.ts`).
 
 **Handoff and acceptance:** Consumers must update repaint signatures and test repeated timestamps as well as intermediate times. Confirm identical inputs and times produce identical values, transitions have no step discontinuity, and the legacy mode remains usable until consumers adopt the new behavior.
 

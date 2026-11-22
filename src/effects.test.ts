@@ -77,6 +77,83 @@ describe('lightIntensityScale', () => {
       expect(scale).toBeLessThanOrEqual(1);
     }
   });
+
+  it('keeps the stepped output when no options or interpolate: false is given', () => {
+    const flicker = light({ effect: LightEffect.FLICKER, rate: 2 });
+    for (let t = 0; t < 3000; t += 37) {
+      const legacy = lightIntensityScale(flicker, t);
+      expect(lightIntensityScale(flicker, t, {})).toBe(legacy);
+      expect(lightIntensityScale(flicker, t, { interpolate: false })).toBe(
+        legacy,
+      );
+    }
+  });
+
+  it('changes only flicker when interpolate is on', () => {
+    const effects = [
+      LightEffect.STATIC,
+      LightEffect.PULSE,
+      LightEffect.BLINK,
+      LightEffect.AURA,
+      LightEffect.GAS,
+    ];
+    for (const effect of effects) {
+      const l = light({ effect, rate: 3 });
+      for (let t = 0; t < 2000; t += 61) {
+        expect(lightIntensityScale(l, t, { interpolate: true })).toBe(
+          lightIntensityScale(l, t),
+        );
+      }
+    }
+  });
+
+  it('interpolates flicker deterministically within the same range', () => {
+    const flicker = light({ effect: LightEffect.FLICKER, rate: 2 });
+    for (let t = 0; t < 4000; t += 7) {
+      const scale = lightIntensityScale(flicker, t, { interpolate: true });
+      expect(scale).toBe(
+        lightIntensityScale(flicker, t, { interpolate: true }),
+      );
+      expect(scale).toBeGreaterThanOrEqual(0.7);
+      expect(scale).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('blends flicker without a step discontinuity, unlike the stepped mode', () => {
+    const flicker = light({ effect: LightEffect.FLICKER, rate: 1 });
+    // One loop is 1000 ms with 8 jitter steps of 125 ms: sample every
+    // millisecond across several step and loop boundaries.
+    let maxInterpolatedDelta = 0;
+    let maxSteppedDelta = 0;
+    let previousInterpolated = lightIntensityScale(flicker, 0, {
+      interpolate: true,
+    });
+    let previousStepped = lightIntensityScale(flicker, 0);
+    for (let t = 1; t <= 3000; t += 1) {
+      const interpolated = lightIntensityScale(flicker, t, {
+        interpolate: true,
+      });
+      const stepped = lightIntensityScale(flicker, t);
+      maxInterpolatedDelta = Math.max(
+        maxInterpolatedDelta,
+        Math.abs(interpolated - previousInterpolated),
+      );
+      maxSteppedDelta = Math.max(
+        maxSteppedDelta,
+        Math.abs(stepped - previousStepped),
+      );
+      previousInterpolated = interpolated;
+      previousStepped = stepped;
+    }
+    // Smoothstep ease bounds the per-millisecond change well under 0.01...
+    expect(maxInterpolatedDelta).toBeLessThan(0.01);
+    // ...while the stepped mode really jumps at jitter-step boundaries.
+    expect(maxSteppedDelta).toBeGreaterThan(0.05);
+    // The interpolation is also continuous across the loop boundary.
+    expect(
+      lightIntensityScale(flicker, 999.5, { interpolate: true }),
+    ).toBeCloseTo(lightIntensityScale(flicker, 1000, { interpolate: true }), 3);
+  });
 });
 
 describe('lightSweepAngle', () => {
@@ -174,6 +251,43 @@ describe('animatedLightSignature', () => {
     const sparkle = light({ effect: LightEffect.SPARKLE, rate: 1 });
     expect(animatedLightSignature(sparkle, 0)).not.toBe(
       animatedLightSignature(sparkle, 100),
+    );
+  });
+
+  it('keeps the legacy 1/16 intensity quantization without options', () => {
+    const flicker = light({ effect: LightEffect.FLICKER, rate: 8 });
+    // 0–3 ms are within the same legacy 1/16 step.
+    expect(animatedLightSignature(flicker, 0)).toBe(
+      animatedLightSignature(flicker, 3),
+    );
+    expect(animatedLightSignature(flicker, 0)).toBe(
+      animatedLightSignature(flicker, 3, { interpolate: false }),
+    );
+    expect(animatedLightSignature(flicker, 0, {})).toBe(
+      animatedLightSignature(flicker, 0),
+    );
+  });
+
+  it('tightens the intensity quantization when interpolate is on', () => {
+    const flicker = light({ effect: LightEffect.FLICKER, rate: 8 });
+    // Within one legacy 1/16 bucket the interpolated signature still
+    // tracks the continuously changing value at 1/256 precision.
+    let foundFinerStep = false;
+    for (let t = 0; t < 500 && !foundFinerStep; t += 1) {
+      const legacyA = animatedLightSignature(flicker, t);
+      const legacyB = animatedLightSignature(flicker, t + 1);
+      const fineA = animatedLightSignature(flicker, t, { interpolate: true });
+      const fineB = animatedLightSignature(flicker, t + 1, {
+        interpolate: true,
+      });
+      if (legacyA === legacyB && fineA !== fineB) {
+        foundFinerStep = true;
+      }
+    }
+    expect(foundFinerStep).toBe(true);
+    // Deterministic for the same time and options.
+    expect(animatedLightSignature(flicker, 123, { interpolate: true })).toBe(
+      animatedLightSignature(flicker, 123, { interpolate: true }),
     );
   });
 });
