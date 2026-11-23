@@ -22,7 +22,7 @@ Animation math is in `src/effects.ts`; consumer repaint scheduling determines wh
 
 - [x] Add deterministic interpolated flicker while retaining a compatible path for existing effect output and animation signatures (`lightIntensityScale(light, timeMs, { interpolate: true })` blends the jitter steps with a smoothstep ease; the default stays the stepped compatibility path).
 - [x] Coordinate signature precision/semantics with consumers so signatures do not suppress repaints needed to show the intended interpolation; correct the documented `animatedLightSignature` signature in `README.md` when that API work is implemented (`animatedLightSignature(light, timeMs, options?)` tightens the intensity quantum to 1/256 — below one 8-bit alpha step — when interpolating; README "Animation timing" section documents both timings).
-- [ ] Keep sweep-edge continuity and beam behavior at corners as separately validated follow-ups; do not silently change occlusion or ray/corner rules as part of flicker work.
+- [x] Keep sweep-edge continuity and beam behavior at corners as separately validated follow-ups; do not silently change occlusion or ray/corner rules as part of flicker work. (Done: pinned as separately validated behavior in `src/polygons.test.ts` ("sweep beam edges and corners") — the rotating beam's window slides continuously over a full loop (contiguous arc, at most one ray per edge per step, edge rays inclusive, deterministic at repeated and intermediate times), sweep polygons keep the bare fixed-ray form at wall corners, and every in-beam endpoint is identical to the non-sweep ray's endpoint, including passage through the shared corner of diagonally adjacent blockers. No occlusion or ray/corner rule changed.)
 - [x] Add synthetic-time tests for determinism, interpolation continuity, range and compatibility (`src/effects.test.ts`).
 
 **Handoff and acceptance:** Consumers must update repaint signatures and test repeated timestamps as well as intermediate times. Confirm identical inputs and times produce identical values, transitions have no step discontinuity, and the legacy mode remains usable until consumers adopt the new behavior.
@@ -63,7 +63,7 @@ Build optional shadow computation on the M3 geometry contract and profile it bef
 - [ ] Keep the package dependency-free and callback/environment-driven; add no game, scene, canvas, Svelte or i18n imports.
 - [ ] Export each intended API only through `src/index.ts`; update `README.md` contracts and examples with the implementation, including the actual `animatedLightSignature(light, timeMs)` signature when that API is changed.
 - [ ] Add synthetic-environment and boundary/public-surface coverage for each new contract; package tests establish math and geometry, not renderer appearance or raster performance.
-- [ ] Coordinate package release/version and consumer adoption before relying on new fields or changing visual defaults. Game acceptance and implementation ownership are in the [matching game milestones](../drakriddarna/TODO-lighting.md).
+- [x] Coordinate package release/version and consumer adoption before relying on new fields or changing visual defaults: v0.2.0 is published and the game consumes `^0.2.0` (falloff profiles resolved into scene light views; interpolated flicker API available, game adoption pending). Game acceptance and implementation ownership are in the [matching game milestones](../drakriddarna/TODO-lighting.md).
 
 ## Cache safety — existing proposal
 

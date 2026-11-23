@@ -11,6 +11,7 @@ import {
   type LightingEnv,
   type LightSource,
   type LightViewport,
+  type Position,
 } from './types';
 
 const CELL = 32;
@@ -499,5 +500,222 @@ describe('lightInViewport', () => {
       position: { x: 90, y: 90 },
     });
     expect(lightInViewport(gas, viewport)).toBe(true);
+  });
+});
+
+describe('sweep beam edges and corners', () => {
+  // Separately validated follow-ups of the animation work: the rotating
+  // beam's edge continuity over time and its behavior at corners. These
+  // pin the current sweep semantics — the beam only re-selects rays from
+  // the time-independent endpoint march — without changing any occlusion
+  // or ray/corner rule.
+
+  // The fixed ray count of the base circle the beam assembles from.
+  const RAY_COUNT = 120;
+
+  // Indices of the rays whose endpoint lies inside the beam; the rest
+  // collapse onto the light center.
+  const beamIndices = (points: Position[], center: Position): number[] => {
+    const indices: number[] = [];
+    points.forEach((point, i) => {
+      if (point.x !== center.x || point.y !== center.y) {
+        indices.push(i);
+      }
+    });
+    return indices;
+  };
+
+  it('slides the beam window continuously over a full rotation', () => {
+    const env = envFromGrid(Array.from({ length: 5 }, () => '............'));
+    // Rate 0.05 loops in 20 s: a 100 ms step turns the beam 1.8°, well
+    // under the 3° ray spacing, so each window edge advances at most one
+    // ray per step.
+    const sweep = light({ effect: LightEffect.SWEEP, radius: 8, rate: 0.05 });
+    const center = { x: 1.5 * CELL, y: 1.5 * CELL };
+    const windowSizes = new Set<number>();
+    const union = new Set<number>();
+    const endpoints = new Map<number, Position>();
+    let previous: number[] = [];
+    let contiguous = true;
+    for (let t = 0; t <= 20000; t += 100) {
+      const points = computeLightPolygon(sweep, env, CELL, 'sweep-edge', t);
+      // The beam always assembles from the bare fixed-order rays.
+      expect(points).toHaveLength(RAY_COUNT);
+      const indices = beamIndices(points, center);
+      windowSizes.add(indices.length);
+      indices.forEach((i) => union.add(i));
+      // The window is a contiguous arc of ray indices (mod RAY_COUNT).
+      const sorted = [...indices].sort((a, b) => a - b);
+      let gaps = 0;
+      for (let k = 1; k < sorted.length; k++) {
+        if (sorted[k] !== sorted[k - 1] + 1) gaps++;
+      }
+      if (
+        gaps > 1 ||
+        (gaps === 1 &&
+          !(sorted[0] === 0 && sorted[sorted.length - 1] === RAY_COUNT - 1))
+      ) {
+        contiguous = false;
+      }
+      // Edge continuity: at most one ray enters and one leaves per step.
+      if (previous.length) {
+        const before = new Set(previous);
+        const after = new Set(indices);
+        let changed = 0;
+        after.forEach((i) => {
+          if (!before.has(i)) changed++;
+        });
+        previous.forEach((i) => {
+          if (!after.has(i)) changed++;
+        });
+        expect(changed).toBeLessThanOrEqual(2);
+      }
+      // A contributing ray keeps its time-independent endpoint: the beam
+      // re-selects the cached ray endpoints, it never re-marches them.
+      indices.forEach((i) => {
+        const seen = endpoints.get(i);
+        if (seen) {
+          expect(points[i]).toBe(seen);
+        } else {
+          endpoints.set(i, points[i]);
+        }
+      });
+      previous = indices;
+    }
+    expect(contiguous).toBe(true);
+    // The beam's full angle is a quarter of the circle: 30 rays, plus the
+    // boundary ray when the sweep lands exactly on a ray angle.
+    expect([...windowSizes].sort((a, b) => a - b)).toEqual([30, 31]);
+    // Over a full loop every ray has been inside the beam once.
+    expect(union.size).toBe(RAY_COUNT);
+    expect(endpoints.size).toBe(RAY_COUNT);
+  });
+
+  it('includes the rays exactly on the beam edge and collapses the rest', () => {
+    const env = envFromGrid(Array.from({ length: 5 }, () => '............'));
+    const center = { x: 1.5 * CELL, y: 1.5 * CELL };
+    // Rate 1: at t = 125 ms the beam points at exactly 45°, so rays 0°
+    // (index 0) and 90° (index 30) sit exactly on the half-angle boundary
+    // and are included (collapse is strictly beyond the half angle).
+    const points = computeLightPolygon(
+      light({ effect: LightEffect.SWEEP, radius: 8, rate: 1 }),
+      env,
+      CELL,
+      'sweep-edge-boundary',
+      125,
+    );
+    expect(beamIndices(points, center)).toEqual(
+      Array.from({ length: 31 }, (_, i) => i),
+    );
+    // Index 31 (93°) is just outside the beam: collapsed onto the center.
+    expectRay(points[31], center);
+  });
+
+  it('is deterministic for repeated and intermediate timestamps', () => {
+    const env = envFromGrid(Array.from({ length: 5 }, () => '............'));
+    const sweep = light({ effect: LightEffect.SWEEP, radius: 8, rate: 0.05 });
+    for (const t of [0, 1, 7, 123, 999, 1234, 5000, 19999, 20000]) {
+      expect(
+        computeLightPolygon(sweep, env, CELL, 'sweep-determinism', t),
+      ).toEqual(computeLightPolygon(sweep, env, CELL, 'sweep-determinism', t));
+    }
+  });
+
+  it('keeps the bare fixed-ray polygon at wall corners and reuses the plain ray endpoints', () => {
+    // A 12x12 border-walled room with a sealed wall column at x = 5.
+    const grid = Array.from({ length: 12 }, (_, y) =>
+      Array.from({ length: 12 }, (_, x) =>
+        x === 0 || x === 11 || y === 0 || y === 11 || x === 5 ? '#' : '.',
+      ).join(''),
+    );
+    const env = envFromGrid(grid, {
+      isStepBlocked: (from, to) =>
+        grid[to.y]?.[to.x] === '#' || grid[from.y]?.[from.x] === '#',
+    });
+    const center = { x: 2.5 * CELL, y: 7.5 * CELL };
+    // The non-sweep polygon of the same light: chord-refined, but its
+    // base rays are exactly the sweep beam's ray endpoints.
+    const staticPoints = computeLightPolygon(
+      light({ position: { x: 2, y: 7 }, radius: 6 }),
+      env,
+      CELL,
+      'sweep-corners',
+    );
+    const sweep = light({
+      position: { x: 2, y: 7 },
+      radius: 6,
+      effect: LightEffect.SWEEP,
+      rate: 0.05,
+    });
+    let compared = 0;
+    for (let t = 0; t <= 20000; t += 250) {
+      const points = computeLightPolygon(sweep, env, CELL, 'sweep-corners', t);
+      // Sweep beams keep the bare fixed-order rays even where a chord
+      // would cut across the wall column's corners: never refined.
+      expect(points).toHaveLength(RAY_COUNT);
+      for (const i of beamIndices(points, center)) {
+        compared++;
+        // The beam only re-selects rays: every contributing endpoint is
+        // one of the plain polygon's endpoints, so occlusion, wall stops
+        // and corner rules are exactly the non-sweep ones.
+        expect(
+          staticPoints.some(
+            (q) => Math.hypot(q.x - points[i].x, q.y - points[i].y) < 1e-6,
+          ),
+        ).toBe(true);
+      }
+    }
+    expect(compared).toBeGreaterThan(0);
+  });
+
+  it('threads the shared corner of diagonally adjacent blockers inside the beam', () => {
+    // (3,1) and (2,2) are diagonally adjacent blockers. The 18° ray (index
+    // 6) clips only a corner sliver of (3,1) between sample points and
+    // passes through their shared corner; its neighbors at 15° and 21°
+    // are sampled inside the blocking cells and stop.
+    const grid = Array.from({ length: 8 }, (_, y) =>
+      Array.from({ length: 8 }, (_, x) =>
+        (x === 3 && y === 1) || (x === 2 && y === 2) ? '#' : '.',
+      ).join(''),
+    );
+    const env = envFromGrid(grid);
+    const center = { x: 1.5 * CELL, y: 1.5 * CELL };
+    const staticPoints = computeLightPolygon(
+      light({ radius: 8 }),
+      env,
+      CELL,
+      'sweep-diagonal',
+    );
+    // Rate 1 at t = 50 ms: the beam points at 18°, covering indices 0..21
+    // and 111..119 — including 5 (15°), 6 (18°) and 7 (21°).
+    const points = computeLightPolygon(
+      light({ effect: LightEffect.SWEEP, radius: 8, rate: 1 }),
+      env,
+      CELL,
+      'sweep-diagonal',
+      50,
+    );
+    const dist = (p: Position) => Math.hypot(p.x - center.x, p.y - center.y);
+    // The 18° ray passes the diagonal pair and reaches far past it...
+    expect(dist(points[6])).toBeGreaterThan(6 * CELL);
+    // ...while its neighbors stop in the blocking cells' lit near half.
+    expect(dist(points[5])).toBeLessThan(2 * CELL);
+    expect(dist(points[7])).toBeLessThan(2 * CELL);
+    // Each in-beam ray ends exactly where the plain ray of the same angle
+    // ends — the diagonal-corner rule is unchanged inside the beam.
+    expectRay(
+      points[6],
+      rayEndpoint(staticPoints, (18 * Math.PI) / 180, center),
+    );
+    expectRay(
+      points[5],
+      rayEndpoint(staticPoints, (15 * Math.PI) / 180, center),
+    );
+    expectRay(
+      points[7],
+      rayEndpoint(staticPoints, (21 * Math.PI) / 180, center),
+    );
+    // Outside the beam the rays collapse onto the center.
+    expectRay(points[30], center);
   });
 });
